@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Streamer API QA Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Streamer API QA Dashboard</h1>
+      <div class="sub" id="target-line">Live API automation · read-only · evidence-based</div>
+    </div>
+    <span class="badge s-idle" id="header-run-state">No run</span>
+    <nav aria-label="Pages">
+      <a href="/" aria-current="page">Dashboard</a>
+      <a href="/working-steps.html">Framework Working Steps</a>
+    </nav>
+  </header>
+
+  <main>
+    <!-- 6.1 API Information -->
+    <section class="card" aria-labelledby="api-info-title">
+      <details class="collapsible" id="api-info-details">
+        <summary><h2 id="api-info-title">API Information</h2><span class="muted small" id="api-info-status">Loading discovery…</span></summary>
+        <div id="api-info-body"></div>
+      </details>
+    </section>
+
+    <!-- 6.4 / 6.9 Automation controls -->
+    <section class="card automation" aria-labelledby="auto-title">
+      <div class="card-head"><h2 id="auto-title">Automation</h2><p id="auto-eligibility"></p><a href="#review-title" class="small">Review &amp; approve test cases ↓</a></div>
+      <div class="row">
+        <button type="button" class="primary big" id="btn-start">▶ Start Automation</button>
+        <button type="button" class="danger" id="btn-stop" disabled>■ Stop Run</button>
+        <span class="run-state" id="run-state">No run started in this session.</span>
+      </div>
+      <div class="row">
+        <div class="progress" aria-label="Execution progress"><div id="progress-bar"></div></div>
+        <span class="small muted" id="progress-text"></span>
+      </div>
+    </section>
+
+    <!-- 6.5 Live logs -->
+    <section class="card" aria-labelledby="logs-title">
+      <div class="card-head">
+        <h2 id="logs-title">Live Execution Logs</h2>
+        <p>Actual events only, in the order they occurred. Secrets are redacted; phone/email values are masked.</p>
+      </div>
+      <div class="toolbar">
+        <input type="search" id="log-filter" placeholder="Filter logs (case ID, stage, text)…" aria-label="Filter logs">
+        <select id="log-level" aria-label="Filter log level">
+          <option value="">All levels</option><option value="pass">pass</option><option value="fail">fail</option>
+          <option value="blocked">blocked</option><option value="warn">warn</option><option value="error">error</option><option value="info">info</option>
+        </select>
+        <label class="inline"><input type="checkbox" id="log-system" checked> Discovery &amp; observation events</label>
+        <label class="inline"><input type="checkbox" id="log-autoscroll" checked> Auto-scroll</label>
+        <span class="small muted" id="log-count"></span>
+      </div>
+      <div class="logs" id="logs" role="log" aria-live="polite"></div>
+    </section>
+
+    <!-- 6.6 Summary -->
+    <section class="card" aria-labelledby="summary-title">
+      <div class="card-head">
+        <h2 id="summary-title">Execution Summary</h2>
+        <label class="inline small">Viewing run <select id="run-select" aria-label="Select run"></select></label>
+      </div>
+      <div class="stat-grid" id="stats"></div>
+      <div class="tabs" role="tablist" id="tabs"></div>
+      <div class="tab-panel" id="tab-panel" role="tabpanel"></div>
+    </section>
+
+    <!-- 6.2 Test Case Review -->
+    <section class="card" aria-labelledby="review-title">
+      <div class="card-head">
+        <h2 id="review-title">Test Case Review</h2>
+        <p>Review every generated case before automation. Only approved, executable cases run. Needs Validation cases cannot be approved until their expected behaviour is established.</p>
+      </div>
+      <div class="counts" id="review-counts"></div>
+      <div class="toolbar" role="search">
+        <input type="search" id="f-search" placeholder="Search ID, scenario, description, evidence…" aria-label="Search test cases">
+        <select id="f-endpoint" aria-label="Filter by endpoint"><option value="">All endpoints</option></select>
+        <select id="f-category" aria-label="Filter by category"><option value="">All categories</option></select>
+        <select id="f-approval" aria-label="Filter by approval">
+          <option value="">All approval states</option>
+          <option value="pending">Pending review</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+          <option value="needs-validation">Needs Validation</option>
+        </select>
+        <select id="f-status" aria-label="Filter by test status"><option value="">All test statuses</option></select>
+        <button type="button" id="f-clear">Clear filters</button>
+      </div>
+      <div class="table-wrap" id="table-wrap">
+        <table class="cases" id="cases-table"><thead></thead><tbody></tbody></table>
+      </div>
+      <div class="pager">
+        <span class="muted small" id="pager-info"></span>
+        <button type="button" id="pg-prev">Previous</button>
+        <button type="button" id="pg-next">Next</button>
+        <label class="inline">Rows per page
+          <select id="pg-size"><option>25</option><option selected>50</option><option value="1000">All</option></select>
+        </label>
+      </div>
+
+      <!-- 6.3 Approve / Reject -->
+      <div class="approval-bar" aria-label="Approval controls">
+        <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+        <div class="row">
+          <strong id="sel-count">0 selected</strong>
+          <button type="button" class="approve" id="btn-approve-sel">Approve Test Cases (selected)</button>
+          <button type="button" class="reject" id="btn-reject-sel">Reject Test Cases (selected)…</button>
+          <button type="button" id="btn-pending-sel">Reset selected to Pending</button>
+        </div>
+        <div class="row">
+          <button type="button" class="approve" id="btn-approve-shown">Approve all reviewed (shown)…</button>
+          <button type="button" class="reject" id="btn-reject-shown">Reject all reviewed (shown)…</button>
+          <span class="muted small">"Shown" = every case matching the current filters (all pages). Needs Validation cases are never approved by bulk actions.</span>
+        </div>
+        <label for="review-comment" class="small muted">Reviewer comment (optional; saved with approve/reject decisions)</label>
+        <textarea id="review-comment" rows="2" maxlength="1000" placeholder="e.g. Approved after checking evidence against the contract"></textarea>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="dlg">
+    <h3 id="dlg-title"></h3>
+    <p id="dlg-text" class="small"></p>
+    <div id="dlg-reason-wrap">
+      <label for="dlg-reason" class="small muted">Rejection reason / reviewer comment (optional)</label>
+      <textarea id="dlg-reason" rows="3" maxlength="1000"></textarea>
+    </div>
+    <div class="row">
+      <button type="button" id="dlg-cancel">Cancel</button>
+      <button type="button" class="primary" id="dlg-ok">Confirm</button>
+    </div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

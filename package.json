@@ -1,0 +1,20 @@
+{
+  "name": "streamer-api-qa-framework",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Evidence-based, read-only API automation framework and dashboard for the Streamer Earnings API (GET /api/v1/streamers and GET /api/v1/streamers/{streamer_id}).",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "mysql2": "^3.24.6",
+    "ssh2": "^1.17.0"
+  }
+}

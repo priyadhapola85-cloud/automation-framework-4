@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Framework Working Steps</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Framework Working Steps</h1>
+      <div class="sub">How this framework actually works, and why each validation decision is made</div>
+    </div>
+    <nav aria-label="Pages">
+      <a href="/">Dashboard</a>
+      <a href="/working-steps.html" aria-current="page">Framework Working Steps</a>
+    </nav>
+  </header>
+
+  <main class="doc">
+    <section class="card">
+      <h2>Contents</h2>
+      <ol class="toc">
+        <li><a href="#s0">Stack and architecture</a></li>
+        <li><a href="#s1">7.1 API discovery</a></li>
+        <li><a href="#s2">7.2 Database discovery</a></li>
+        <li><a href="#s3">7.3 Reference sources</a></li>
+        <li><a href="#s4">7.4 Real data versus mock or synthetic data</a></li>
+        <li><a href="#s5">7.5 How expected results were established</a></li>
+        <li><a href="#s6">7.6 Assertion and database validation</a></li>
+        <li><a href="#s7">7.7 Test case generation and approval</a></li>
+        <li><a href="#s8">7.8 Execution, retries and failure analysis</a></li>
+        <li><a href="#s9">7.9 Reporting and traceability</a></li>
+        <li><a href="#s10">7.10 Limitations</a></li>
+      </ol>
+      <p class="small muted">Values marked <span class="fact verified">Live</span> are loaded from the running framework (latest discovery and latest stored run), not written by hand.</p>
+    </section>
+
+    <section class="card" id="s0">
+      <h2>Stack and architecture</h2>
+      <p>The project folder already held a Playwright UI-test suite and an unrelated Next.js app (<code>qa-agent</code>). Neither targets this API, so both were left untouched. The framework is a self-contained folder, <code>api-qa-framework/</code>, written in <b>Node.js</b> using:</p>
+      <ul>
+        <li>Built-in <code>fetch</code> for HTTP.</li>
+        <li>The built-in <code>http</code> module for the dashboard server.</li>
+        <li>Server-Sent Events for live updates.</li>
+        <li><code>node:test</code> for unit tests.</li>
+        <li>Two third-party packages for the database: <code>mysql2</code> (MariaDB driver) and <code>ssh2</code> (SSH tunnel). These are the same packages the user's earlier, already-configured project uses to reach this database.</li>
+      </ul>
+      <p>The code is CommonJS, like the existing project.</p>
+      <div class="flow"><span>Discovery (Swagger + MariaDB schema)</span><i>→</i><span>Catalog (57 cases)</span><i>→</i><span>Human review / approval</span><i>→</i><span>Run preparation (fresh discovery)</span><i>→</i><span>Execution + retries</span><i>→</i><span>Classification + defects</span><i>→</i><span>Dashboard / report</span></div>
+      <ul>
+        <li><code>src/discovery.js</code>: discovers the Swagger/OpenAPI contract, the service metadata, and the MariaDB schema (from <code>information_schema</code>).</li>
+        <li><code>src/db.js</code>: read-only MariaDB access through an SSH tunnel. Every query goes through the shared rate limiter.</li>
+        <li><code>src/catalog.js</code>: every test case, with its metadata, evidence, assertion logic, and either a <code>run()</code> function (executable) or an <code>observe()</code> function (Needs Validation).</li>
+        <li><code>src/context.js</code>: a per-attempt context that records HTTP evidence, SQL evidence, assertions, generated inputs and the current stage.</li>
+        <li><code>src/engine.js</code>: run orchestration, retries, stop, final status and defect analysis.</li>
+        <li><code>src/rateLimiter.js</code>: one shared limiter for every HTTP request and every DB query. <code>src/httpClient.js</code>: GET-only client with redaction and masking.</li>
+        <li><code>src/store.js</code>: approvals and run records as JSON files under <code>data/</code> (git-ignored). <code>src/server.js</code>: the dashboard plus its JSON and SSE API, listening on 127.0.0.1.</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s1">
+      <h2>7.1 API discovery</h2>
+      <p>The two endpoints are the ones specified in the task. Expected behaviour comes from the API's Swagger documentation: the Swagger UI at <code>/docs</code>, ReDoc at <code>/redoc</code>, and the OpenAPI 3.1 contract at <code>/openapi.json</code>. Each endpoint was also inspected with real requests: the default call, every documented parameter, boundary and invalid values, and existing and non-existing IDs.</p>
+      <p>At runtime, <code>discoverAll()</code> fetches <code>/openapi.json</code> and <code>/</code> through the shared limiter, with up to 3 retries for 5xx and network errors. For both endpoints it extracts:</p>
+      <ul>
+        <li>parameters, with their types, enums, minimum/maximum and defaults;</li>
+        <li>declared response codes and schemas;</li>
+        <li>any security requirement.</li>
+      </ul>
+      <p>The dashboard's <b>API Information</b> panel is rendered from this result. Run preparation repeats discovery, so every run uses the contract as it is at that moment.</p>
+      <p><b>Supported parameters</b> come only from the contract: <code>skip</code>, <code>limit</code>, <code>status</code>, <code>tier</code> and <code>city</code> for the collection, and <code>streamer_id</code> for the detail endpoint. Boundary and enum values are read from the live contract at run time. <b>Error behaviour</b> is asserted only where the contract or docs state it: 422 for validation errors and 404 for an unknown ID. Undocumented behaviour is tracked as Needs Validation.</p>
+      <p><span class="fact verified">Live</span><span id="live-api">loading…</span></p>
+    </section>
+
+    <section class="card" id="s2">
+      <h2>7.2 Database discovery</h2>
+      <p><b>Access:</b> the user had already configured database access in <code>C:\Users\usre\automation test\.env</code> for an earlier framework. This framework's <code>.env</code> contains only <code>DB_ENV_FILE</code>, which points to that file. Only the <code>DB_*</code> and <code>SSH_*</code> keys are read from it. MariaDB port 3306 is not reachable from outside the server, so <code>src/db.js</code> opens an SSH session to the API host and forwards a stream to the database. Credentials are never logged, shown, or copied into another file.</p>
+      <p><b>Discovery queries</b> (read-only, rate-limited) against <code>information_schema</code>:</p>
+      <ul>
+        <li><code>VERSION()</code> and <code>DATABASE()</code>: server version and database name.</li>
+        <li><code>TABLES</code>: every table.</li>
+        <li><code>COLUMNS</code>: name, full type (including ENUM values), nullability, key flag and default.</li>
+        <li><code>KEY_COLUMN_USAGE</code> joined with <code>TABLE_CONSTRAINTS</code>: PRIMARY KEY, UNIQUE and FOREIGN KEY constraints, with referenced table and column.</li>
+        <li><code>CHECK_CONSTRAINTS</code>: CHECK constraints.</li>
+        <li>One <code>SELECT COUNT(*)</code> per data table.</li>
+      </ul>
+      <p><b>Relationships</b> come from the <i>declared</i> foreign keys (<code>streamers.location_id → locations.id</code> and <code>earnings.streamer_id → streamers.id</code>), not from naming guesses.</p>
+      <p><b>Sensitive data:</b> the <code>users</code> table holds <code>password_hash</code> and <code>api_token</code>. Its rows are never read; only its column names are listed.</p>
+      <p><b>Records for validation</b> are read fresh in each run, and again on every retry: <code>streamers</code>, <code>locations</code>, <code>earnings</code>, and the full streamer history in <code>audit_log</code>.</p>
+      <p><span class="fact verified">Live</span><span id="live-db">loading…</span></p>
+    </section>
+
+    <section class="card" id="s3">
+      <h2>7.3 Reference sources</h2>
+      <table class="report-table">
+        <tr><th>Source</th><td><b>What it establishes / what it cannot establish alone</b></td></tr>
+        <tr><th>Swagger / OpenAPI 3.1 contract (<code>/docs</code>, <code>/openapi.json</code>)</th><td><b>Establishes:</b> parameters, types, bounds, enums, defaults, response codes and schemas.<br><b>Cannot establish:</b> ordering, matching semantics, message wording, performance, or business invariants. Examples in the contract are not treated as requirements.</td></tr>
+        <tr><th>Swagger documentation text</th><td><b>Establishes:</b> "All filters are AND-combined", "city: case-insensitive", "404 if the ID doesn't exist", "authentication optional for read endpoints", the earnings increment rule.<br><b>Cannot establish:</b> exact-vs-partial matching, or the seeded earnings baseline. Its claim that data lives in SQLite is contradicted by the connected MariaDB database; see 7.10.</td></tr>
+        <tr><th>MariaDB <code>information_schema</code></th><td><b>Establishes:</b> real column types, nullability, ENUM values, primary keys, UNIQUE constraints and foreign keys.<br><b>Cannot establish:</b> what the API <i>should</i> return.</td></tr>
+        <tr><th>MariaDB rows (<code>streamers</code>, <code>locations</code>, <code>earnings</code>, <code>audit_log</code>)</th><td><b>Establishes:</b> the real records the API must serve (expected sets for filters, counts, non-existence, field values, relationships, write history).<br><b>Cannot establish:</b> that the stored values are correct for the business. Comparisons prove consistency only.</td></tr>
+        <tr><th>Actual API responses</th><td>Compared against the contract and the database. A response never establishes its own correctness, and HTTP 200 alone proves nothing.</td></tr>
+        <tr><th>API implementation source</th><td><b>Not available.</b> <code>Desktop/API folder</code> is an earlier pytest <i>client</i> for this API, not the server, so it is not used as evidence.</td></tr>
+      </table>
+    </section>
+
+    <section class="card" id="s4">
+      <h2>7.4 Real data versus mock or synthetic data</h2>
+      <ul>
+        <li><b>Real API, real database.</b> Every check runs against the live API (GET only) and the live MariaDB database (SELECT only). There are no mock APIs, mocked responses, fake databases or simulated runs in the dashboard path.</li>
+        <li><b>Business records are never fabricated.</b> Existing IDs, cities, tiers, statuses and relationships come from database rows at run time.</li>
+        <li><b>Generated inputs (disclosed)</b> are used for negative and boundary tests. Each is recorded in the attempt evidence as "Generated input — not a business record". They are:
+          <ul>
+            <li><code>limit</code> = 0, 101, <code>abc</code>, <code>1.5</code>;</li>
+            <li><code>skip</code> = -1, <code>abc</code>;</li>
+            <li>invalid enum values;</li>
+            <li>a city string of the form <code>QA-NoMatch-&lt;runId&gt;</code>, checked against every <code>locations</code> row;</li>
+            <li>IDs proven absent: <code>99999999</code>, <code>qa-not-an-id</code>, a leading-zero variant, a 1024-character string, and <code>' OR '1'='1</code>. Each is proven absent by <code>SELECT COUNT(*) FROM streamers WHERE id = ?</code> returning 0;</li>
+            <li>an invalid token header in one observation.</li>
+          </ul>
+        </li>
+        <li><b>Unit tests</b> (<code>test/framework.test.js</code>) cover the framework's own logic using a local in-process HTTP server and fixture rows. These fixtures are synthetic. They never reach the dashboard and never stand in for results of testing the real API or database.</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s5">
+      <h2>7.5 How expected results were established</h2>
+      <p>A case is <b>executable</b> only when the Swagger contract, its documentation text, or the database schema or data establishes the expected behaviour. Otherwise it is <b>Needs Validation</b>: it has no assertions, cannot be approved, and is only <i>observed</i>. Observing means sending the real requests or queries and recording the results for a human to judge.</p>
+      <ul>
+        <li><b>Missing documentation:</b> marked Needs Validation. This covers ordering, empty or partial city, unknown parameters, trailing slash, 404 message wording, response-time threshold, invalid token, numeric ranges (no CHECK constraints in the DB), phone format, and the total-earnings invariant.</li>
+        <li><b>Conflicting evidence:</b> recorded, not resolved by picking a side. Examples: the contract's <code>date-time</code> (RFC 3339 requires an offset) versus offset-less DATETIME values (TC-LST-030), and the documented SQLite versus the connected MariaDB.</li>
+        <li><b>Partly established expectations:</b> only the established part is asserted. For the city filter, "every DB streamer in that city is returned" and "no unrelated city is returned" are asserted; exact-vs-substring matching is not assumed.</li>
+        <li><b>Derived expectations</b> (API↔DB field equality, relationships, audit-log replay, contract↔schema consistency) are marked <code>defectBasis: derived</code>. A reproducible failure of one of these becomes a <i>suspected</i> defect that needs human confirmation, never a confirmed one.</li>
+      </ul>
+      <h3>Resolving a Needs Validation case (dashboard → Execution Summary → Needs Validation)</h3>
+      <ol>
+        <li><b>Run it and see the actual result.</b> <i>Observe now</i> sends the real requests and queries and shows what actually happens, with no pass/fail.</li>
+        <li><b>Choose the expected behaviour and check it.</b> Each case offers concrete options, such as "unknown parameters are ignored" vs "rejected with 422", a response-time threshold in ms, or a phone regular expression. Each option has its own assertion. <i>Check now</i> runs that assertion once against the live API/DB and shows <b>expected vs actual</b> with Pass/Fail. This is a preview only; it is not recorded as an automation run.</li>
+        <li><b>Save it as a requirement.</b> The decision is stored in <code>data/validations.json</code> with its date and the reviewer's comment. The case becomes executable with <code>defectBasis: requirement</code>, and the decision appears first in its evidence list. Because the definition changed, the case returns to <i>Pending Review</i>. Once approved, <i>Start Automation</i> records the official Pass/Fail with retries, logs and bug reporting. A failure reproduced in all 4 attempts is a <b>confirmed defect</b> against the reviewer's requirement. <i>Clear requirement</i> returns the case to Needs Validation.</li>
+      </ol>
+    </section>
+
+    <section class="card" id="s6">
+      <h2>7.6 Assertion and database validation</h2>
+      <table class="report-table">
+        <tr><th>Category</th><td><b>What is compared</b></td></tr>
+        <tr><th>Status / media type / schema</th><td>HTTP status against the contract (200/404/422). <code>Content-Type</code> against <code>application/json</code>. Body against <code>StreamerOut</code>, <code>ErrorResponse</code> or <code>HTTPValidationError</code> from the live contract.</td></tr>
+        <tr><th>Counts and boundaries</th><td>Array length against <code>min(limit, SELECT COUNT(*) FROM streamers)</code>. An empty array is expected beyond the last row.</td></tr>
+        <tr><th>Filters</th><td>API result sets against DB rows: <code>status</code> and <code>tier</code> against <code>streamers</code> columns, and <code>city</code> against <code>locations.city</code> joined through the declared FK. AND-combination and pagination inside a filter are also checked.</td></tr>
+        <tr><th>Pagination</th><td>The union of small pages against the DB ID set: no duplicates, no gaps, and each page within its limit.</td></tr>
+        <tr><th>API ↔ DB rows</th><td>
+          <ul>
+            <li><b>Rows matched:</b> ID sets are compared both ways (TC-DB-002).</li>
+            <li><b>Field mapping:</b> each API field maps to the column with the <b>identical name</b> in <code>information_schema</code>. <code>location.id</code> maps to <code>location_id</code> only because the FK is declared. Unmapped fields are listed, not asserted.</li>
+            <li><b>Value comparison follows the column type:</b> FLOAT with single-precision relative tolerance (1e-6), INT numerically, DATETIME as a normalised local timestamp, and VARCHAR/ENUM as exact strings.</li>
+            <li><b>Coverage:</b> both the collection endpoint (TC-DB-003) and the detail endpoint for every DB ID (TC-DB-014) are checked.</li>
+          </ul>
+        </td></tr>
+        <tr><th>Relationships</th><td>The embedded <code>location</code> is compared with the <code>locations</code> row referenced by the FK (TC-DB-004). Every <code>earnings.streamer_id</code> must resolve through the detail endpoint (TC-DB-005).</td></tr>
+        <tr><th>Write history</th><td>From the full <code>audit_log</code>:
+          <ul>
+            <li>Streamers whose latest event is DELETE must be absent from the table and the API, and the most recent 5 must return 404.</li>
+            <li>Streamers whose latest event is CREATE, UPDATE or PATCH must be present.</li>
+            <li>The latest change values must equal the current API values.</li>
+          </ul>
+        </td></tr>
+        <tr><th>Contract ↔ schema</th><td>Contract TierEnum and StatusEnum must equal the DB ENUM definitions. Contract types and nullability must agree with the column definitions (TC-DB-012/013).</td></tr>
+        <tr><th>Security</th><td>The contract declares no security requirement, and both endpoints return 200 without credentials. An SQL-like ID is treated as a literal (404, no data).</td></tr>
+      </table>
+      <p><b>Avoiding false positives:</b></p>
+      <ul>
+        <li>Nothing is asserted about undocumented ordering, message text, extra fields or timing.</li>
+        <li>Non-existence is proven in the DB before a 404 is expected.</li>
+        <li>Numeric tolerance is used only where the column type is FLOAT.</li>
+        <li>Data is re-read from the API and the DB on every retry, which absorbs concurrent changes on this shared system.</li>
+        <li>An attempt with no assertions is never reported as passed.</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s7">
+      <h2>7.7 Test case generation and approval</h2>
+      <p><b>Where scenarios come from:</b></p>
+      <ul>
+        <li>Everything the Swagger contract defines for the two endpoints: boundaries, types, every enum value, the documented filter semantics, and both error responses.</li>
+        <li>Cross-endpoint identity between the collection and detail endpoints.</li>
+        <li>What the database schema makes checkable: row sets, declared FKs, ENUM and type definitions, and write history.</li>
+      </ul>
+      <p><b>Avoiding duplicates:</b> each case checks one distinct behaviour. Multiple values of the same behaviour (for example, every enum value) are grouped into a single case.</p>
+      <p><b>IDs:</b> cases are numbered <code>TC-&lt;area&gt;-NNN</code>, where the area is LST, GET, XEP, DB or SEC.</p>
+      <p><b>Approval control:</b></p>
+      <ul>
+        <li>Every case starts as <i>Pending Review</i>. Nothing is auto-approved.</li>
+        <li>Only cases that are executable <b>and</b> approved, with an unchanged definition hash, are executed.</li>
+        <li>Rejected cases are excluded. Needs Validation cases are refused by the approval endpoint.</li>
+        <li>Start Automation is disabled until at least one eligible case is approved, and the server re-checks this when a run is started.</li>
+      </ul>
+      <p><span class="fact verified">Live</span><span id="live-catalog">loading…</span></p>
+    </section>
+
+    <section class="card" id="s8">
+      <h2>7.8 Execution, retries and failure analysis</h2>
+      <ol>
+        <li><b>Start:</b> the server snapshots the approved executable IDs. A second start while a run is active is refused with HTTP 409.</li>
+        <li><b>Preparation:</b> fresh API discovery and DB schema discovery. If the DB is unreachable, DB-dependent cases are Blocked with the exact connection error.</li>
+        <li><b>Execution:</b> 2 workers process the approved cases. <b>One shared limiter</b> gates every HTTP request and every SQL query (cases, retries, discovery, observations), so there are at most 2 operations in any 1-second window. This means the DB never receives more than 2 queries per second from the framework. The report shows the HTTP and DB counts separately, along with the maximum observed per second.</li>
+        <li><b>Attempt outcomes:</b> each attempt ends in one of these:
+          <ul>
+            <li>passed;</li>
+            <li>assertion failure;</li>
+            <li>connectivity error (HTTP, or a dropped DB/SSH connection);</li>
+            <li>dependency unavailable;</li>
+            <li>blocked (missing DB configuration, missing table or FK, no usable data);</li>
+            <li>test-framework error.</li>
+          </ul>
+        </li>
+        <li><b>Retries:</b> assertion failures, connectivity errors and dependency errors are retried up to <b>3 times</b> (4 attempts in total), with fresh API and DB data each time. Blocked cases and framework errors are not retried. Every attempt is stored.</li>
+        <li><b>Final status:</b> exactly one of Passed (intermittent passes keep their history), Failed, Blocked, or Not Executed.</li>
+        <li><b>Stop:</b> no new case or retry starts. In-flight read-only operations finish and are recorded. The run ends as <i>stopped</i> and is marked partial.</li>
+        <li><b>Defect verification:</b>
+          <ul>
+            <li><b>Confirmed defect:</b> the same assertion fails in all 4 attempts, and the expectation comes from the contract or the documentation.</li>
+            <li><b>Unverified suspicion:</b> everything else, including derived expectations, inconsistent failures, interrupted retries and intermittent passes.</li>
+            <li>Infrastructure problems never become defects.</li>
+            <li>Severity and priority are <b>Unassigned — Needs Review</b>, because no classification policy was supplied.</li>
+          </ul>
+        </li>
+      </ol>
+    </section>
+
+    <section class="card" id="s9">
+      <h2>7.9 Reporting and traceability</h2>
+      <p>The engine emits <code>log</code>, <code>case</code> and <code>run</code> events. They reach the dashboard over Server-Sent Events. Every case's logs record each "API request sent", "DB query sent" and "DB result received", plus the start and end of database validation, each assertion, retries, failures and the final result.</p>
+      <p>After every case, the run record is saved to <code>data/runs/&lt;runId&gt;.json</code>. Each attempt in it includes:</p>
+      <ul>
+        <li>HTTP evidence: secrets redacted, phone and email masked.</li>
+        <li>SQL evidence: the statement, its parameters, the row count, the duration, and up to 3 sample rows with PII masked.</li>
+        <li>Each assertion with its expected value, actual value and source.</li>
+        <li>Any generated inputs.</li>
+      </ul>
+      <p>Reference data shared between cases is attached to every case that uses it. Each defect links to its test case, endpoint, failed assertions, SQL evidence, curl reproduction steps and retry history.</p>
+      <p><span class="fact verified">Live</span><span id="live-run">loading…</span></p>
+    </section>
+
+    <section class="card" id="s10">
+      <h2>7.10 Limitations</h2>
+      <ul id="live-limits"></ul>
+      <ul>
+        <li><b>Documentation vs database:</b> the Swagger description says the data lives in a SQLite file, but the connected database is MariaDB <code>streamer_api</code>. Its row counts and IDs match the API, so the documentation note is treated as outdated. This is recorded as a discrepancy, not resolved by assumption.</li>
+        <li><b>Consistency, not correctness:</b> API↔DB comparisons prove the two agree. They do not prove the stored business values are right.</li>
+        <li><b><code>users</code> table is never read:</b> it contains credentials.</li>
+        <li><b>Write operations are not authorised.</b> Create, update and delete flows are not tested, and API behaviour when the database is down cannot be tested safely.</li>
+        <li><b>No API implementation source</b> was available.</li>
+        <li><b>Needs Validation cases</b> are waiting for human decisions, and no severity/priority policy or response-time threshold was supplied.</li>
+        <li><b>Shared live system:</b> other users write to this API and database. Retries re-read data to reduce false failures, but cannot remove them entirely.</li>
+        <li><b>Local storage only:</b> approvals and run history are local JSON files. The dashboard has no reviewer login and binds to 127.0.0.1.</li>
+        <li><b>Archived runs:</b> three earlier runs executed before the MariaDB connection was added are archived in <code>data/archive-pre-mariadb/</code>. They are not shown in the dashboard.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script>
+    'use strict';
+    const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    Promise.all([fetch('/api/info').then((r) => r.json()), fetch('/api/cases').then((r) => r.json()), fetch('/api/runs/current').then((r) => r.json())]).then(([info, cases, cur]) => {
+      const d = info.discovery;
+      if (d && d.available) {
+        const c = d.api.contract;
+        document.getElementById('live-api').innerHTML = ` Last discovery ${esc(new Date(d.finishedAt).toLocaleString())} (${esc(d.source)}): contract ${c.available ? `${esc(c.title)} ${esc(c.version)}, OpenAPI ${esc(c.openapi)}` : 'UNAVAILABLE'}; ${d.api.endpoints.map((e) => `${esc(e.method)} ${esc(e.path)} → params [${e.parameters.map((p) => esc(p.name)).join(', ')}], responses [${e.responses.map((r) => esc(r.code)).join(', ')}]`).join('; ')}.`;
+        const db = d.db;
+        document.getElementById('live-db').innerHTML = db.connected
+          ? ` Connected to <b>${esc(db.database)}</b> (${esc(db.version)}) via ${esc(d.dbConfig && d.dbConfig.via)}. Tables: ${db.tables.map((t) => `${esc(t.name)} (${t.sensitive ? 'not read' : esc(t.rowCount) + ' rows'}; PK ${esc(t.primaryKey.join(',') || '—')}${t.unique.length ? '; UNIQUE ' + esc(t.unique.map((u) => u.column).join(',')) : ''})`).join(', ')}. Foreign keys: ${db.relationships.map((r) => `${esc(r.from)} → ${esc(r.to)}`).join(', ') || 'none'}. Discovery issued ${db.queries.length} read-only queries.`
+          : ` <b>Not connected:</b> ${esc(db.error)}`;
+        document.getElementById('live-limits').innerHTML = db.connected ? '' : `<li><span class="fact blocked">Live</span>Database not connected at last discovery: ${esc(db.error)}</li>`;
+      }
+      const cs = cases.cases;
+      const by = {};
+      cs.forEach((c) => { by[c.category] = (by[c.category] || 0) + 1; });
+      document.getElementById('live-catalog').innerHTML = ` ${cs.length} cases: ${cs.filter((c) => c.executable).length} executable, ${cs.filter((c) => !c.executable).length} Needs Validation. By category: ${Object.entries(by).map(([k, v]) => `${esc(k)} ${v}`).join(', ')}. Approval now: ${['pending', 'approved', 'rejected', 'needs-validation'].map((s) => `${s} ${cs.filter((c) => c.approval.status === s).length}`).join(', ')}.`;
+      const run = cur.run;
+      if (run) {
+        const res = Object.values(run.results);
+        const n = (s) => res.filter((r) => r.status === s).length;
+        const rl = run.rateLimit;
+        document.getElementById('live-run').innerHTML = ` Latest run <code>${esc(run.runId)}</code>: ${esc(run.status)}${run.partial ? ' (partial)' : ''}. ${res.length} eligible: ${n('Passed')} passed, ${n('Failed')} failed, ${n('Blocked')} blocked, ${n('Not Executed')} not executed. ${res.reduce((s, r) => s + (r.retryCount || 0), 0)} retries; ${run.defects.length} defect record(s)${rl ? `. ${rl.httpRequests} HTTP requests + ${rl.dbQueries} DB queries; at most ${rl.maxObservedInAnyOneSecondWindow} operations (${rl.maxDbQueriesInAnyOneSecondWindow} DB queries) in any 1-second window` : ''}.`;
+      } else document.getElementById('live-run').textContent = ' No run has been executed yet. Runs are started by the reviewer from the dashboard after approving cases.';
+    }).catch((e) => { document.getElementById('live-api').textContent = ' Could not load live data: ' + e.message; });
+  </script>
+</body>
+</html>
